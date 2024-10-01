@@ -1,0 +1,175 @@
+import * as alt from 'alt-client';
+import * as native from 'natives';
+
+let isDirectorModeActive = false; // jest to flaga dla trybu rezysera
+let camera: number; // kamera w trybie rezysera
+let flySpeed = 1.0; // predkosc poruszania kamery
+let isMovingBetweenPoints = false; // flaga dla ruchu miedzy punktami
+let savePoints: { position: alt.Vector3, rotation: alt.Vector3 }[] = []; // jest to tablica zapisanych wszystkich punktow kamery
+let currentPointIndex = 0; // jest to aktualny punkt, do ktorego porusza sie kamera
+let transitionDuration = 3000; // czas przejscia miedzy punktami (jest on podany w milisekundach)
+let startTime = 0; // czesc rozpoczecia plynnego ruchu
+
+const maxSavePoints = 10; // 10 - czyli maksymalna liczba save points
+
+// jest to wejscie w tryb rezysera za pomocą klawisza F6, zapis punktu kamery za pomoca H, start ruchu kamery za pomoca O
+alt.on('keydown', (key) => {
+    if (key === 117) { // F6 - wlacz i wylacz tryb rezysera
+        toggleDirectorMode();
+    }
+
+    if (key === 72 && isDirectorModeActive) { // H - zapisz punkt kamery
+        saveCameraPosition();
+    }
+
+    if (key === 79 && isDirectorModeActive && savePoints.length > 1 && !isMovingBetweenPoints) { // O - start plynnego ruchu
+        startCameraMovement();
+    }
+});
+
+// wlaczenie i wylaczenie trybu rezysera
+function toggleDirectorMode() {
+    if (isDirectorModeActive) {
+        exitDirectorMode();
+    } else {
+        enterDirectorMode();
+    }
+}
+
+// funkcja aktywujaca caly tryb rezysera
+function enterDirectorMode() {
+    isDirectorModeActive = true;
+    const player = alt.Player.local;
+    const playerPos = player.pos;
+    const camCoords = { x: playerPos.x, y: playerPos.y, z: playerPos.z + 1.0 };
+
+    // stworzenie kamery
+    camera = native.createCamWithParams(
+        'DEFAULT_SCRIPTED_CAMERA',
+        camCoords.x, camCoords.y, camCoords.z,
+        0, 0, 0, // obrot kamery
+        50,      // FOV
+        true,    // Interpolacja
+        2        // Smooth movement
+    );
+
+    native.setCamActive(camera, true);
+    native.renderScriptCams(true, false, 0, true, false);
+
+    // ukrycie gracza i wylaczenie calego HUD
+    native.setEntityVisible(player.scriptID, false, false);
+    native.freezeEntityPosition(player.scriptID, true);
+    native.displayHud(false);
+    native.displayRadar(false);
+
+    alt.log('Director mode enabled.');
+}
+
+// funkcja dezaktywujaca caly tryb rezysera
+function exitDirectorMode() {
+    isDirectorModeActive = false;
+
+    // wylaczenie kamery
+    native.setCamActive(camera, false);
+    native.renderScriptCams(false, false, 0, true, false);
+    native.destroyCam(camera, true);
+
+    // pokazanie gracza i ponowne pokazania trybu HUD
+    const player = alt.Player.local;
+    native.setEntityVisible(player.scriptID, true, false);
+    native.freezeEntityPosition(player.scriptID, false);
+    native.displayHud(true);
+    native.displayRadar(true);
+
+    // reset zapisanych punktow
+    savePoints = [];
+    currentPointIndex = 0;
+    isMovingBetweenPoints = false;
+
+    alt.log('Director mode disabled.');
+}
+
+// funkcja zapisujaca pozycje i rotacje kamery
+function saveCameraPosition() {
+    if (savePoints.length >= maxSavePoints) {
+        alt.log('Max number of save-points reached.');
+        return;
+    }
+
+    const camPos = native.getCamCoord(camera);
+    const camRot = native.getCamRot(camera, 2);
+
+    savePoints.push({
+        position: new alt.Vector3(camPos.x, camPos.y, camPos.z),
+        rotation: new alt.Vector3(camRot.x, camRot.y, camRot.z)
+    });
+
+    alt.log(`Saved camera position ${savePoints.length}: ${camPos.x}, ${camPos.y}, ${camPos.z}`);
+}
+
+// funkcja ktora uruchamia plynny ruch kamery pomiedzy punktami
+function startCameraMovement() {
+    if (savePoints.length < 2) {
+        alt.log('Not enough save-points to start camera movement.');
+        return;
+    }
+
+    isMovingBetweenPoints = true;
+    currentPointIndex = 0;
+    startTime = Date.now();
+
+    alt.log('Starting camera movement between save-points...');
+    alt.everyTick(handleCameraMovement);
+}
+
+// funkcja obslugujaca plynny ruch kamery
+function handleCameraMovement() {
+    const elapsedTime = Date.now() - startTime;
+
+    if (elapsedTime >= transitionDuration) {
+        // przejscie do kolejnego punktu
+        currentPointIndex++;
+
+        if (currentPointIndex >= savePoints.length - 1) {
+            // jesli dotarlismy do ostatniego punktu, zatrzymaj caly ruch
+            alt.clearEveryTick(handleCameraMovement);
+            isMovingBetweenPoints = false;
+            alt.log('Camera movement finished.');
+            return;
+        }
+
+        startTime = Date.now(); // reset time
+    }
+
+    // oblicz procent przejscia pomiedzy kolejnymi punktami
+    const t = Math.min(elapsedTime / transitionDuration, 1);
+    const startPoint = savePoints[currentPointIndex];
+    const endPoint = savePoints[currentPointIndex + 1];
+
+    // interpolacja kamery
+    const newPos = interpolateVector(startPoint.position, endPoint.position, t);
+    const newRot = interpolateVector(startPoint.rotation, endPoint.rotation, t);
+
+    native.setCamCoord(camera, newPos.x, newPos.y, newPos.z);
+    native.setCamRot(camera, newRot.x, newRot.y, newRot.z, 2);
+}
+
+// funkcja miedzy dwoma wektorami
+function interpolateVector(startVec: alt.Vector3, endVec: alt.Vector3, t: number): alt.Vector3 {
+    const x = startVec.x + (endVec.x - startVec.x) * t;
+    const y = startVec.y + (endVec.y - startVec.y) * t;
+    const z = startVec.z + (endVec.z - startVec.z) * t;
+    return new alt.Vector3(x, y, z);
+}
+
+
+
+
+
+
+
+- Po kolei, dzięki przyciskowi F6 możemy wejść w tryb reżysera
+- Za pomocą przycisku na klawiaturze H użytkownik może zapisać aktualną pozycje jak i rotację kamery
+- Można zapisać maksymalnie 10 punktów. Jeśli to osiągnie limit, dalsze zapisywanie nie będzie działać
+- Po zapisaniu przynajmniej 2 punktów użytkownik może przy użycia klawisza na klawiaturze "O" uruchomić płynny ruch kamery pomiędzy punktami
+
